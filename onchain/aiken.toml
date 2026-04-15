@@ -1,0 +1,18 @@
+name = "emmanuel/lesson203_3"
+version = "0.0.0"
+compiler = "v1.1.21"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Aiken contracts for project 'emmanuel/lesson203_3'"
+
+[repository]
+user = "emmanuel"
+project = "lesson203_3"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3"
+source = "github"
+
+[config]

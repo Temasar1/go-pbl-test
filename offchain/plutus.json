@@ -1,0 +1,12 @@
+{
+  "definitions": {
+  "my_token/MintRedeemer": {
+    "title": "MintRedeemer",
+    "dataType": "constructor",
+    "index": 0,
+    "fields": [
+      { "title": "action", "dataType": "#bytes" }
+    ]
+    }
+  }
+}
