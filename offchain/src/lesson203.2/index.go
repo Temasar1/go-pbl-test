@@ -12,7 +12,16 @@ import (
 	"go-pbl-test/config"
 )
 
-func RunLesson203_2(cfg config.AppConfig) error {
+// RunLesson203_2 mints or burns tokenName via a native-script policy tied to the wallet key.
+//
+//   - amount > 0  → mint that many tokens and send them to the wallet
+//   - amount < 0  → burn that many tokens (pass a negative number, e.g. -50_000)
+//   - amount == 0 → no-op, returns nil
+func RunLesson203_2(cfg config.AppConfig, amount int, tokenName string) error {
+	if amount == 0 {
+		return nil
+	}
+
 	bfc, err := BlockFrostChainContext.NewBlockfrostChainContext(
 		constants.BLOCKFROST_BASE_URL_PREPROD,
 		int(constants.PREPROD),
@@ -32,15 +41,12 @@ func RunLesson203_2(cfg config.AppConfig) error {
 		return err
 	}
 
-	// GetAddress().PaymentPart is []byte — the 28-byte payment key hash.
 	pkh := apollob.GetWallet().GetAddress().PaymentPart
 	script := NativeScript.NativeScript{
 		Tag:     NativeScript.ScriptPubKey,
 		KeyHash: pkh,
 	}
 
-	// script.Hash() returns (serialization.ScriptHash, error).
-	// ScriptHash is [28]byte — use [:] to get []byte for hex encoding.
 	scriptHash, err := script.Hash()
 	if err != nil {
 		return err
@@ -48,26 +54,32 @@ func RunLesson203_2(cfg config.AppConfig) error {
 	policyId := hex.EncodeToString(scriptHash[:])
 	fmt.Println("Policy ID:", policyId)
 
-	mintUnit := apollo.NewUnit(policyId, "GimbalToken", 1_000_000)
+	unit := apollo.NewUnit(policyId, tokenName, amount)
 
 	utxos, err := bfc.Utxos(*apollob.GetWallet().GetAddress())
 	if err != nil {
 		return err
 	}
 
-	apollob, _, err = apollob.
+	apollob = apollob.
 		AddLoadedUTxOs(utxos...).
-		MintAssetsWithNativeScript(mintUnit, script).
+		MintAssetsWithNativeScript(unit, script).
 		AddRequiredSignerFromBech32(
 			apollob.GetWallet().GetAddress().String(),
 			true, false,
-		).
-		PayToAddressBech32(
+		)
+
+	// Minting: send the new tokens to the wallet.
+	// Burning: no PayToAddress needed — the negative mint destroys the tokens.
+	if amount > 0 {
+		apollob = apollob.PayToAddressBech32(
 			apollob.GetWallet().GetAddress().String(),
 			2_000_000,
-			mintUnit,
-		).
-		Complete()
+			unit,
+		)
+	}
+
+	apollob, _, err = apollob.Complete()
 	if err != nil {
 		return err
 	}
@@ -78,6 +90,10 @@ func RunLesson203_2(cfg config.AppConfig) error {
 		return err
 	}
 
-	fmt.Println("Tx hash:", hex.EncodeToString(txId.Payload))
+	action := "Mint"
+	if amount < 0 {
+		action = "Burn"
+	}
+	fmt.Printf("%s tx hash: %s\n", action, hex.EncodeToString(txId.Payload))
 	return nil
 }
