@@ -13,10 +13,7 @@ import (
 )
 
 // RunLesson203_2 mints or burns tokenName via a native-script policy tied to the wallet key.
-//
-//   - amount > 0  → mint that many tokens and send them to the wallet
-//   - amount < 0  → burn that many tokens (pass a negative number, e.g. -50_000)
-//   - amount == 0 → no-op, returns nil
+// amount > 0 mints, amount < 0 burns, amount == 0 is a no-op.
 func RunLesson203_2(cfg config.AppConfig, amount int, tokenName string) error {
 	if amount == 0 {
 		return nil
@@ -64,19 +61,10 @@ func RunLesson203_2(cfg config.AppConfig, amount int, tokenName string) error {
 	apollob = apollob.
 		AddLoadedUTxOs(utxos...).
 		MintAssetsWithNativeScript(unit, script).
-		AddRequiredSignerFromBech32(
-			apollob.GetWallet().GetAddress().String(),
-			true, false,
-		)
+		AddRequiredSignerFromBech32(apollob.GetWallet().GetAddress().String(), true, false)
 
-	// Minting: send the new tokens to the wallet.
-	// Burning: no PayToAddress needed — the negative mint destroys the tokens.
 	if amount > 0 {
-		apollob = apollob.PayToAddressBech32(
-			apollob.GetWallet().GetAddress().String(),
-			2_000_000,
-			unit,
-		)
+		apollob = apollob.PayToAddressBech32(apollob.GetWallet().GetAddress().String(), 2_000_000, unit)
 	}
 
 	apollob, _, err = apollob.Complete()

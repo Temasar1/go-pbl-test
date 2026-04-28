@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ type AppConfig struct {
 	WalletMnemonic      string
 }
 
-func loadConfig() (AppConfig, error) {
+func Load() (AppConfig, error) {
 	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		return AppConfig{}, err
 	}
@@ -23,10 +23,10 @@ func loadConfig() (AppConfig, error) {
 	}
 
 	if cfg.BlockfrostProjectID == "" {
-		return AppConfig{}, fmt.Errorf("missing required environment variable: BLOCKFROST_PROJECT_ID")
+		return AppConfig{}, fmt.Errorf("missing required env var: BLOCKFROST_PROJECT_ID")
 	}
 	if cfg.WalletMnemonic == "" {
-		return AppConfig{}, fmt.Errorf("missing required environment variable: WALLET_MNEMONIC")
+		return AppConfig{}, fmt.Errorf("missing required env var: WALLET_MNEMONIC")
 	}
 
 	return cfg, nil
