@@ -2,168 +2,118 @@ package lesson203_3
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/Salvionied/apollo"
 	"github.com/Salvionied/apollo/constants"
+	"github.com/Salvionied/apollo/serialization/Address"
 	"github.com/Salvionied/apollo/serialization/PlutusData"
-	"github.com/Salvionied/apollo/serialization/Redeemer"
 	"github.com/Salvionied/apollo/txBuilding/Backend/BlockFrostChainContext"
-	"github.com/fxamacker/cbor/v2"
-	"github.com/joho/godotenv"
 )
 
-const compiledCode = "585401010029800aba2aba1aab9eaab9dab9a4888896600264653001300600198031803800cc0180092225980099b8748000c01cdd500144c9289bae30093008375400516401830060013003375400d149a26cac8009"
+const (
+	BLOCKFROST_KEY = "preprodYOUR_KEY_HERE"
+	MNEMONIC       = "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+)
 
-func RunLesson203_3Transaction() error {
-	godotenv.Load()
+type Blueprint struct {
+	Validators []struct {
+		Title string `json:"title"`
+		Hash  string `json:"hash"`
+	} `json:"validators"`
+}
 
-	cfg, err := loadConfig()
-	if err != nil {
-		return err
+// scriptAddress derives a preprod enterprise address from a validator hash.
+// AddressFromBytes(payment, paymentIsScript, staking, stakingIsScript, network)
+func scriptAddress(scriptHash string) Address.Address {
+	hashBytes, _ := hex.DecodeString(scriptHash)
+	return *Address.AddressFromBytes(hashBytes, true, nil, false, constants.PREPROD)
+}
+
+// buildDatum constructs the hello_world Datum.
+// Blueprint: constructor 0, fields: [owner: #bytes] → tag 121
+// PlutusArray = tagged constructor (Constr); PlutusBytes = raw byte field.
+func buildDatum(owner []byte) PlutusData.PlutusData {
+	return PlutusData.PlutusData{
+		PlutusDataType: PlutusData.PlutusArray,
+		TagNr:          121,
+		Value: PlutusData.PlutusIndefArray{
+			PlutusData.PlutusData{
+				PlutusDataType: PlutusData.PlutusBytes,
+				Value:          owner,
+			},
+		},
 	}
+}
 
+func RunLesson203_3Transaction() {
 	bfc, err := BlockFrostChainContext.NewBlockfrostChainContext(
 		constants.BLOCKFROST_BASE_URL_PREPROD,
 		int(constants.PREPROD),
-		cfg.BlockfrostProjectID,
+		BLOCKFROST_KEY,
 	)
 	if err != nil {
-		return fmt.Errorf("blockfrost init: %w", err)
+		panic(err)
 	}
 
-	scriptBytes, err := hex.DecodeString(compiledCode)
+	apollob := apollo.New(&bfc)
+	apollob, err = apollob.SetWalletFromMnemonic(MNEMONIC, constants.PREPROD)
 	if err != nil {
-		return fmt.Errorf("decode script hex: %w", err)
+		panic(err)
 	}
-	mintingScript := PlutusData.PlutusV3Script(scriptBytes)
-
-	scriptHash, err := mintingScript.Hash()
+	apollob, err = apollob.SetWalletAsChangeAddress()
 	if err != nil {
-		return fmt.Errorf("script hash: %w", err)
+		panic(err)
 	}
-	policyID := hex.EncodeToString(scriptHash.Bytes())
-	fmt.Println("Policy ID:", policyID)
 
-	cc := apollo.NewEmptyBackend()
-	builder := apollo.New(&cc)
-
-	builder, err = builder.SetWalletFromMnemonic(cfg.WalletMnemonic, constants.PREPROD)
+	// Read the spend validator hash from plutus.json.
+	data, err := os.ReadFile("plutus.json")
 	if err != nil {
-		return fmt.Errorf("set wallet: %w", err)
+		panic(err)
 	}
-	builder, err = builder.SetWalletAsChangeAddress()
+	var bp Blueprint
+	json.Unmarshal(data, &bp)
+	var spendHash string
+	for _, v := range bp.Validators {
+		if v.Title == "lesson203_1.hello_world.spend" {
+			spendHash = v.Hash
+		}
+	}
+	if spendHash == "" {
+		panic("hello_world.spend not found in plutus.json")
+	}
+
+	contractAddress := scriptAddress(spendHash)
+	fmt.Println("Script address:", contractAddress.String())
+
+	// GetAddress().PaymentPart is []byte — the wallet's 28-byte payment key hash.
+	// Set as datum.owner so only this wallet can satisfy the spend validator.
+	walletPkh := apollob.GetWallet().GetAddress().PaymentPart
+	datum := buildDatum(walletPkh)
+
+	utxos, err := bfc.Utxos(*apollob.GetWallet().GetAddress())
 	if err != nil {
-		return fmt.Errorf("set change address: %w", err)
+		panic(err)
 	}
 
-	walletAddr := builder.GetWallet().GetAddress()
-	utxos, err := bfc.Utxos(*walletAddr)
-	if err != nil {
-		return fmt.Errorf("fetch utxos: %w", err)
-	}
-	if len(utxos) == 0 {
-		return fmt.Errorf("no UTxOs at %s", walletAddr.String())
-	}
-	fmt.Printf("Found %d UTxO(s)\n", len(utxos))
-
-	redeemer := PlutusData.PlutusData{Value: 1}
-	mintUnit := apollo.NewUnit(policyID, "gimbalabs_go_test_token", 1000)
-
-	builder, _, err = builder.
+	// isInline=true stores the datum bytes in the UTxO output itself.
+	// The unlock transaction in 203.4 reads it directly from the UTxO.
+	apollob, _, err = apollob.
 		AddLoadedUTxOs(utxos...).
-		AttachV3Script(mintingScript).
-		MintAssetsWithRedeemer(mintUnit, redeemer).
-		PayToAddressBech32(walletAddr.String(), 2_000_000, mintUnit).
+		PayToContract(contractAddress, &datum, 5_000_000, true).
 		Complete()
 	if err != nil {
-		return fmt.Errorf("tx build failed: %w", err)
+		panic(err)
 	}
 
-	// --- Evaluate first ---
-	tx := builder.GetTx()
-	txCbor, err := cbor.Marshal(tx)
+	apollob = apollob.Sign()
+	txId, err := apollob.Submit()
 	if err != nil {
-		return fmt.Errorf("marshal for eval: %w", err)
+		panic(err)
 	}
 
-	eval, err := bfc.EvaluateTx(txCbor)
-	if err != nil {
-		fmt.Printf("⚠️  EvaluateTx error: %v\n", err)
-	} else {
-		fmt.Printf("✅ EvaluateTx result: %+v\n", eval)
-	}
-
-	// --- Force-set ExUnits on ALL redeemers ---
-	redeemers := builder.GetRedeemers()
-	fmt.Printf("Redeemers count: %d\n", len(redeemers))
-
-	for key, r := range redeemers {
-		fmt.Printf("  Redeemer key=%s mem=%d steps=%d\n", key, r.ExUnits.Mem, r.ExUnits.Steps)
-
-		// Try eval result first
-		if eval != nil {
-			if exUnits, ok := eval[key]; ok {
-				r.ExUnits = exUnits
-				redeemers[key] = r
-				fmt.Printf("  → Applied eval ExUnits: mem=%d steps=%d\n", exUnits.Mem, exUnits.Steps)
-				continue
-			}
-		}
-
-		// Always override — never leave at 0
-		r.ExUnits = Redeemer.ExecutionUnits{
-			Mem:   14_000_000,
-			Steps: 10_000_000_000,
-		}
-		redeemers[key] = r
-		fmt.Println("  → Applied fallback ExUnits")
-	}
-
-	builder = builder.UpdateRedeemers(redeemers)
-
-	// Verify ExUnits were actually set
-	finalRedeemers := builder.GetRedeemers()
-	for key, r := range finalRedeemers {
-		fmt.Printf("Final redeemer key=%s mem=%d steps=%d\n", key, r.ExUnits.Mem, r.ExUnits.Steps)
-	}
-
-	builder = builder.Sign()
-	signedTx := builder.GetTx()
-
-	signedCbor, err := cbor.Marshal(signedTx)
-	if err != nil {
-		return fmt.Errorf("marshal signed tx: %w", err)
-	}
-
-	// Decode the CBOR to confirm ExUnits in the final tx before submitting
-	fmt.Println("Signed Tx CBOR:", hex.EncodeToString(signedCbor))
-
-	txID, err := bfc.SubmitTx(*signedTx)
-	if err != nil {
-		return fmt.Errorf("submit failed: %w", err)
-	}
-
-	fmt.Println("✅ Tx Hash:", hex.EncodeToString(txID.Payload))
-	return nil
-}
-
-type AppConfig struct {
-	BlockfrostProjectID string
-	WalletMnemonic      string
-}
-
-func loadConfig() (AppConfig, error) {
-	cfg := AppConfig{
-		BlockfrostProjectID: os.Getenv("BLOCKFROST_PROJECT_ID"),
-		WalletMnemonic:      os.Getenv("WALLET_MNEMONIC"),
-	}
-	if cfg.BlockfrostProjectID == "" {
-		return cfg, fmt.Errorf("missing BLOCKFROST_PROJECT_ID")
-	}
-	if cfg.WalletMnemonic == "" {
-		return cfg, fmt.Errorf("missing WALLET_MNEMONIC")
-	}
-	return cfg, nil
+	fmt.Println("Lock tx hash:", hex.EncodeToString(txId.Payload))
+	fmt.Println("Save this hash — you need it for 203.4.")
 }
